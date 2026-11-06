@@ -59,3 +59,32 @@ A continuación se presenta la lista definitiva y el orden de los 16 módulos de
 
 ### 16. Datos de Construcción
 *Define las propiedades de los ítems que pueden ser colocados en el mundo como estructuras (paredes, suelos, cimientos, etc.).*
+
+---
+
+## Estado de implementación (verificado contra `STR_ItemInfo.T3D`)
+
+`STR_ItemInfo` ya existe en Unreal con 17 campos reales. La correspondencia contra los 16 módulos acordados, verificada directamente contra la estructura (no contra memoria de sesiones previas), es la siguiente:
+
+| # Módulo | Estado | Campo(s) real(es) en `STR_ItemInfo` |
+|---|---|---|
+| 1. Identidad (Datos Básicos y UI) | ✅ Implementado | `ItemID`, `ItemTypeTags`, `PropertyTags`, `UI_Data` (`STR_UiItemData`), `WorldRepresentation` (`STR_WorldRepresentation`) — el módulo 1 se dividió en 5 campos concretos en vez de uno solo |
+| 2. Comportamiento en Inventario | ✅ Implementado | `InventoryBehavior` (`STR_InventoryBehavior`) |
+| 3. Sistema Multi-Uso y de Acciones | ✅ Implementado | `MultiUseBehavior` (`STR_MultiUse`) |
+| 4. Comportamiento de Equipamiento | ✅ Implementado | `EquipmentBehavior` (`STR_EquipmentBehavior`) |
+| 5. Datos Económicos | ✅ Implementado | `EconomicData` (`STR_EconomicData`) |
+| 6. Ciclo de Vida (ItemLife) y Deterioro | ✅ Implementado | `ItemLifeData` (`STR_ItemLifeData`) |
+| 7. Datos de Estadísticas | ✅ Implementado | `StatData` (`STR_StatData`, contiene `EffectRules`/`ConsumeEffects`) |
+| 8. Sistemas de Fabricación | ✅ Implementado | `CraftingBehavior` (`STR_CraftingData`) |
+| 9. Encantamiento y Modificación Mágica | ✅ Implementado | `EnchantingBehavior` (`STR_EnchantingData`) |
+| 10. Obtención y Entorno (Investigación) | ✅ Implementado (simplificado) | `EmpiricalDiscoveryTags` — quedó como `GameplayTagContainer` plano, no como sub-estructura dedicada; más simple que lo descrito originalmente (herramienta/clima/lugar como campos separados) |
+| 11. Aprendizaje y Desbloqueo (Textos) | ❌ Sin campo dedicado | No existe un campo propio en `STR_ItemInfo`. Pendiente confirmar si se descartó, si vive en otro lado, o si sigue pendiente de construir |
+| 12. Propiedades de Objetos Arrojadizos | ❌ Sin campo dedicado | No existe un campo propio. Es candidato a resolverse dentro del sistema de efectos (`StatData`/`ConsumeEffects`, vía `Effect.Throw`) en vez de como módulo aparte — pendiente de confirmar, no asumir |
+| 13. Datos de Trampas y Cebos | ✅ Implementado | `TrapBehavior` (`STR_TrapData`) |
+| 14. Sistema de Música e Interpretación | ❌ Sin campo dedicado | No existe un campo propio en `STR_ItemInfo` |
+| 15. Propiedades de Iluminación | ✅ Implementado | `LightingData` (`STR_LightingData`) |
+| 16. Datos de Construcción | ✅ Implementado | `BuildingBehavior` (`STR_BuildingData`) |
+
+**Resumen:** 13 de 16 módulos tienen un campo dedicado y verificado en `STR_ItemInfo`. Los módulos 11 (Aprendizaje/Desbloqueo), 12 (Arrojadizos) y 14 (Música) no tienen campo propio todavía — no se puede confirmar desde la estructura si fueron descartados deliberadamente, absorbidos por otro sistema (ej. Arrojadizos dentro de `StatData`), o si simplemente siguen pendientes de construir. Queda como punto abierto a confirmar en sesión.
+
+> Nota: este documento describe `STR_ItemInfo` (la definición inamovible del ítem). `STR_InstanceData` y `STR_Slot` ya existen como assets en `Game/GameDataTypes/Data/Structs/Items/` — confirmado su archivo, no se verificó en esta pasada el contenido/campos de cada una.
