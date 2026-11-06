@@ -3,4 +3,9 @@
 /SunyiProject/Saved
 /SunyiProject/Build
 /SunyiProject/Windows
-/SunyiProject/.cursor
+# .cursor: solo se versionan los documentos de contexto numerados (N - / N-N -)
+# de la raiz de Contextos. Exports, ContextProgress y Olds quedan fuera.
+/SunyiProject/.cursor/*
+!/SunyiProject/.cursor/Contextos/
+/SunyiProject/.cursor/Contextos/*
+!/SunyiProject/.cursor/Contextos/[0-9]*.md
