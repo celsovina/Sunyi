@@ -96,11 +96,12 @@ No repite el detalle de estructuras/enums/DataTables, que vive en `4-1`. Solo re
 | FinalActionList | STR_ActionDefinition | Array | Resultado de `ValidateAcceptedActions`; es la lista que se recorre para construir los botones. |
 | ContextTag | GameplayTag | — | Tag de contexto contra el que se comparan los `ContextualLabels` de la fila actual (`ClickedHandler` o `ExternalTarget` según `CompareExternal?`). |
 | ContextLabel | Text | — | Label resuelto de la fila actual (`DefaultLabel` o el contextual que coincida). |
-| SlotIndex | int | — | Expose on Spawn. `WBP_Slot` le pasa su `ContentIndex`. Usado por el puente temporal `SelectClickedAction` como `SlotSourceIndex`. |
-| SlotTags | GameplayTagContainer | — | Expose on Spawn, categoría **DEPRECATED**. `WBP_Slot` la pasa al crear el menú. Aún la usa `SelectClickedAction` (su primer tag como `ContextTag` del payload). |
-| GI Sunyi Ref | GI_Sunyi | — | Expose on Spawn, categoría **DEPRECATED**. Aún la usa `SelectClickedAction` para llamar `OnUseRequested`. |
+| CurrentRequest | STR_ActionRequest | — | Copia completa de la entrada `ActionSource` de `BuildActionsMenu` (`Requester`, `Target` = contenedor clicado, `ItemSlotData`). La lee `SelectClickedAction` para armar el `STR_ActionExec`. `CurrentRequest.Target` y `ClickedHandler` son el mismo contenedor. |
+| SlotIndex | int | — | Expose on Spawn. `WBP_Slot` le pasa su `ContentIndex`. `SelectClickedAction` lo usa como `SourceSlotIndex` (no viene en `STR_ActionRequest`). |
+| SlotTags | GameplayTagContainer | — | Expose on Spawn, categoría **DEPRECATED**. `WBP_Slot` la sigue pasando, pero ya ningún grafo del menú la lee. Se borra en la limpieza. |
+| GI Sunyi Ref | GI_Sunyi | — | Expose on Spawn, categoría **DEPRECATED**. Ya no se usa (el menú pide el manager con `GetGameInstance` → `GetExecActionManager`). Se borra en la limpieza. |
 | Item Manager | BP_ItemManager | — | Expose on Spawn. Usado por `SetHandlers` y `GetItemInfo` en `BuildActionsMenu`. |
-| SlotData | STR_Slot | — | Variable vieja, **no** es Expose on Spawn y ningún grafo la asigna. `SelectClickedAction` la lee para el payload, así que hoy llega vacía (ver Pendiente). |
+| SlotData | STR_Slot | — | Variable vieja, nunca asignada. Ya no se usa (el ítem llega en `CurrentRequest.ItemSlotData`). Se borra en la limpieza. |
 
 ### `WBP_ContextMenu.BuildActionsMenu` (entrada y locales)
 | Nombre | Tipo | Contenedor | Descripción |
@@ -143,11 +144,11 @@ Recorre todos los `RowNames` de `DT_ActionDefinition`, extrae el `ActionTag` de 
 
 **Entradas:** `ActionSource` (`STR_ActionRequest`).
 
-Desglosa `ActionSource`, llama `BPFL_Utilities.SetHandlers` (reutilizado conceptualmente para resolver Source/Target; es la única llamada de esta función que sigue en la biblioteca vieja, ver nota de migración), valida que `ItemSlotData` no esté vacío (`BooleanOR` de `ItemID != None` y `Quantity != 0`, cubriendo tanto slots vacíos por ausencia de ítem como por cantidad cero), limpia los hijos del contenedor de UI, obtiene `ItemInfo` del ítem clicado y lo guarda en `LocalReqItem`, y llama a `ValidateActionMenu(ClickedHandler, ItemData=LocalReqItem)` → `ActionListRaw`.
+Guarda `ActionSource` completo en la variable de miembro `CurrentRequest` (para que `SelectClickedAction` arme la petición de ejecución), desglosa `ActionSource`, llama `BPFL_Utilities.SetHandlers` (reutilizado conceptualmente para resolver Source/Target; es la única llamada de esta función que sigue en la biblioteca vieja, ver nota de migración), valida que `ItemSlotData` no esté vacío (`BooleanOR` de `ItemID != None` y `Quantity != 0`, cubriendo tanto slots vacíos por ausencia de ítem como por cantidad cero), limpia los hijos del contenedor de UI, obtiene `ItemInfo` del ítem clicado y lo guarda en `LocalReqItem`, y llama a `ValidateActionMenu(ClickedHandler, ItemData=LocalReqItem)` → `ActionListRaw`.
 
 **Filtro de lista negra ya conectado:** el `ActionListRaw` devuelto por `ValidateActionMenu` se pasa directo a `ValidateAcceptedActions(ClickedHandler, ActionListRaw)` → `ActionList`, aplicando el filtro de acciones excluidas antes de continuar. El filtro lo sigue llamando el widget (no se integró dentro de `ValidateActionMenu`, por decisión).
 
-**Migración en curso (05/11/2026):** las dos llamadas pasan de `BPFL_ContextActions` al manager: `GetGameInstance` → `GetExecActionManager` (`BPI_GIAccess`) → `ValidateActionMenu` / `ValidateAcceptedActions` del manager. Mismas entradas y salidas; solo cambia el objetivo de la llamada.
+**Migración completada (05/11/2026):** las dos llamadas ya usan el manager: `GetGameInstance` → `GetExecActionManager` (`BPI_GIAccess`) → `ValidateActionMenu` / `ValidateAcceptedActions` del manager. Mismas entradas y salidas. Probado en PIE sin problemas; `BPFL_ContextActions` se borró.
 
 **Conectada desde:** `WBP_Slot.OnPreviewMouseButtonDown` (rama click derecho, solo si el slot tiene `ItemID != None`), que ya no llama a `InitializeMenu`. Si ya existe un `ContextMenuRef` lo quita (`RemoveFromParent`), crea un `WBP_ContextMenu` nuevo pasándole por Expose on Spawn `SlotIndex = ContentIndex`, `SlotTags`, `GI Sunyi Ref` e `Item Manager` (no pasa `SlotData`), obtiene el actor propietario con `SlotHandler.GetOwnerActor()` y llama `BuildActionsMenu` con `ActionSource = (Requester = Owner, Target = SlotHandler, ItemSlotData = SlotData)`. Después hace `AddToViewport` y posiciona `OptionsContainer` en la posición del mouse. Nota: `Requester` es el dueño del contenedor clicado, no necesariamente el jugador (ej. al clicar un slot de cofre, el Requester sería el cofre); relevante para el futuro bucket de Requester.
 
@@ -184,27 +185,25 @@ En las tres ramas de creación pasa `OptionText` como `ButtonLabel` y `TargetAct
 - `HandleOptionClicked(ActionTag)` → `SelectClickedAction(ActionTag, Quantity = 1)` (cantidad fija para botones estándar).
 - `HandleOptionNumeric(Quantity, ActionTag)` → `SelectClickedAction(ActionTag, Quantity)` (cantidad del selector).
 
-### `WBP_ContextMenu.SelectClickedAction` — **puente temporal al sistema viejo**
-> Ejecuta la acción elegida usando todavía el pipeline viejo (`STR_UseItemPayload` + `GI_Sunyi.OnUseRequested` → `BP_UseItemManager`). Existe para poder probar el menú nuevo de punta a punta mientras `RequestAction` no esté terminada. Se reemplaza por `BP_ExecActionManager.RequestAction` (ver *Ejecución de acciones*).
+### `WBP_ContextMenu.SelectClickedAction`
+> Ejecuta la acción elegida a través de `BP_ExecActionManager.RequestAction` (07/11/2026). Reemplazó al puente temporal que usaba `STR_UseItemPayload` + `GI_Sunyi.OnUseRequested`. **Sin respaldo al sistema viejo**: las acciones que ningún sistema implementa todavía (Use, Inspect, Equip) responden `Fail.NotImplemented` o `Fail.NoHandler`, y es lo esperado.
 
 **Entradas:** `ActionTag` (GameplayTag), `Quantity` (int).
 
-Arma un `STR_UseItemPayload` con:
-| Campo del payload | Origen |
+`Get CurrentRequest` → *Break STR_ActionRequest* → *Make STR_ActionExec*:
+| Campo de `STR_ActionExec` | Origen |
 |---|---|
-| ActionInitiator | `GetOwningPlayerPawn` |
-| SourceHandler | `ClickedHandler` |
-| TargetHandler | `ExternalTarget` |
-| ContextTag | `SlotTags[0]` (variable DEPRECATED, vía `BreakGameplayTagContainer` + `Get 0`) |
-| SlotData | variable `SlotData` (**nunca asignada → llega vacía**) |
-| SlotSourceIndex | `SlotIndex` |
+| Requester | `CurrentRequest.Requester` |
 | ActionTag | entrada `ActionTag` |
-| Cuantity | entrada `Quantity` |
-| ActionTrigger | sin conectar (valor por defecto) |
+| ItemSlot | `CurrentRequest.ItemSlotData` |
+| Quantity | entrada `Quantity` |
+| SourceSlotIndex | `SlotIndex` |
+| SourceContainer | `CurrentRequest.Target` (contenedor clicado) |
+| TargetContainer | `ExternalTarget` **siempre**, sea válido o no. El filtro según `CompareExternal?` lo hace `RequestAction` (ver más abajo). |
 
-Llama al dispatcher `GI Sunyi Ref.OnUseRequested(Payload)`, cierra el menú (`RemoveFromParent`) y devuelve el foco al juego con `SetUserFocus(GetPlayerController(0))`.
+`GetGameInstance` → `GetExecActionManager` (*Message* de `BPI_GIAccess`) → `RequestAction(ActionExec)` → cierra el menú (`RemoveFromParent`) → `SetUserFocus(GetPlayerController(0))`. El `ActionResult` aún no se usa.
 
-**Inconsistencias conocidas del puente** (aceptables solo mientras sea temporal): `SlotData` llega vacía (el menú nunca la recibe; el dato correcto está en `ActionSource.ItemSlotData`, que es una entrada de `BuildActionsMenu` y no se guarda en una variable de miembro); `ContextTag` sale de `SlotTags` (DEPRECATED) en vez de `ClickedHandler.GetContainerType()`; `ActionInitiator` usa el pawn del jugador, mientras que `BuildActionsMenu` recibe como `Requester` al dueño del contenedor.
+**Detalle menor pendiente:** `SetUserFocus` se llama sobre el propio menú después de `RemoveFromParent`; si se busca devolver el foco al juego o al inventario, el destino debería ser ese widget, o usar `Set Input Mode`.
 
 ### `BP_ExecActionManager.ValidateActionMenu`
 > Función orquestadora. Prefetchea todo el contexto común y llama a las validaciones específicas.
@@ -356,26 +355,59 @@ Como ambas funciones tienen salida, en el componente se implementan como **funci
 ### `BP_ExecActionManager`
 > Ruta: `ContextActionSystem/Blueprints/`. Tipo **Object** (mismo patrón que `BP_ItemManager` / `BP_UseItemManager`): único, sin presencia en el mundo, igual para jugador y PNJ. Lo construye `GI_Sunyi`. Reemplaza a `BP_UseItemManager`. Todas sus funciones quedan **Public** (decisión: no se sabe aún qué otros sistemas las usarán).
 
-#### `RequestAction` — *esqueleto creado, lógica pendiente*
+#### `RequestAction` — *implementada*
 **Entrada:** `ActionExec` → **Salida:** `ActionResult`.
-Flujo previsto: `ResolveAction` → (falla: `FinishAction(MakeFailResult(Fail.NoRule))`) → guardar la acción resuelta en el payload (*Set Members in STR_ActionExec*: `ActionTag = ActionRule.ActionTag`) → `ValidateExec` → (falla: su `FailTag`) → `FindHandler(ExecutorReference)` → (falla: `Fail.NoHandler`) → `ExecuteAction` (*Message* sobre el handler) → [pendiente: respaldo de `ReturnedItems`] → `FinishAction` → Return. Todas las ramas terminan en `FinishAction` (salida única).
+**Locales:** `LocalExec` (STR_ActionExec), `LocalRule` (STR_ActionDefinition), `LocalHandler` (Object), `LocalResult` (STR_ActionResult).
+0. `ItemSlot.ItemID != None` → si no: `Fail.InvalidItem`. Solo se valida el `ItemID`: el inventario ya limpia siempre cualquier slot con `Quantity <= 0`.
+1. `ResolveAction(ActionExec)` → si no `Found?`: `Fail.NoRule`. Si sí: `Set LocalRule`.
+2. `Set LocalExec = ActionExec` → *Branch* sobre `LocalRule.CompareExternal?`:
+   - **true** → *Set Members in STR_ActionExec* (`ActionTag` = `LocalRule.ActionTag`); `TargetContainer` se queda como llegó.
+   - **false** → *Set Members in STR_ActionExec* (`ActionTag` = `LocalRule.ActionTag`, `TargetContainer` expuesto y sin conectar = **None**).
+   - Las dos ramas guardan en `LocalExec` y siguen a `ValidateExec`. Desde aquí todo usa `LocalExec`, para que el ejecutor y el aviso conozcan la acción resuelta aunque la petición llegara vacía.
+   - **Por qué se limpia `TargetContainer`:** `FindHandler` busca primero en el Target. Si el menú manda el cofre abierto como Target en un Split o un Drop, el cofre (también `System.Handler.Inventory`) coincide primero y ejecuta la acción sobre su propio slot `SourceSlotIndex`, no sobre el del contenedor clicado. Cambiar el orden de `FindHandler` no sirve, porque Transfer necesita que el destino sea quien ejecuta. El filtro va en el manager (y no en el menú) porque solo el manager conoce la acción resuelta (una petición con `ActionTag` vacío) y así aplica también a PNJ, hotbar y teclas rápidas.
+3. `ValidateExec(LocalExec, LocalRule)` → si no `Valid?`: fallo con el `FailTag` devuelto.
+4. `FindHandler(LocalExec, LocalRule.ExecutorReference)` → si no `Found?`: `Fail.NoHandler`. Si sí: `Set LocalHandler`.
+5. `ExecuteAction` (*Message* de `BPI_ExecActionHandler`) sobre `LocalHandler` con `LocalExec` → `Set LocalResult`.
+6. *Comment* PENDIENTE: destino de `LocalResult.ReturnedItems` (ver `4-1`: almacenamiento oculto anclado al `InstanceID`, por diseñar).
+7. `FinishAction(LocalExec, LocalResult)` → Return (`ActionResult` = `Result`).
 
-#### `ResolveAction` — *en construcción*
-**Entrada:** `ActionExec` → **Salidas:** `ActionRule` (STR_ActionDefinition), `Found?` (bool, **por defecto false** en el Return Node, para que ninguna rama devuelva `true` por accidente).
-- `ActionTag` válido (explícita: menú, PNJ) → `GetTagName` → `Map_Find` en `ActionRulesMap` → Return (`Found?` = resultado del `Map_Find`). **Implementado.**
-- `ActionTag` vacío (hotbar, tecla rápida, doble clic) → `ItemManagerRef.GetItemInfo(ItemSlot.ItemID)` → si falla, `Found? = false` → si no, acción por defecto con `ValidateActiveAction(ActionRulesList, ItemInfo)` (la misma función del menú, así doble clic y menú coinciden) → si no hay, **MultiUse por contexto (pendiente)**. *Parcial: llega hasta `GetItemInfo`.*
+**Las cinco salidas pasan por `FinishAction`**: cada fallo es `FinishAction(ActionExec o LocalExec, MakeFailResult(tag))` → Return. Fallos 0 y 1 usan `ActionExec` (aún no existe `LocalExec`); fallos 3 y 4 usan `LocalExec` (con la acción resuelta, para que `OnActionExecuted` informe qué acción falló). Verificado en el Blueprint (07/11/2026).
 
-#### `ValidateExec` — *esqueleto creado*
-**Entradas:** `ActionExec`, `ActionRule` → **Salidas:** `Valid?`, `FailTag`. Reglas genéricas, en orden:
-1. Sin `SourceContainer` válido → válido (no hay contenedor que revisar).
-2. `SourceSlotIndex >= 0`: slot sin cambios (`ItemID` + `InstanceID` contra `GetSlotData`) → `Fail.StaleSlot` (**medida de seguridad**: el inventario refresca la UI en cada operación, pero el menú guarda una copia al abrirse y no escucha `OnInventoryUpdated`); cantidad `1 ≤ Quantity ≤ slot.Quantity` → `Fail.InvalidQuantity`. El tope de Split (`Quantity - 1`) **no** va aquí: es regla específica de Inventory.
-3. Capacidades: requisito vacío → pasa (explícito); si no, `MatchMode` → `HasAnyTags`/`HasAllTags` (`TagContainer` = capacidades del `SourceContainer`, `Other` = requisito) → `Fail.NotAllowed`.
-4. `ExcludeActions`: `HasAnyTags(MakeContainerFromTag(ActionTag), GetExcludeActions, exact=false)` → `Fail.NotAllowed`.
-5. `RequiredRequesterCapability` → pendiente (falta el componente de capacidades del actor).
+**Probado en PIE (07/11/2026):** Split, Drop y Transfer desde el menú contextual, de punta a punta.
 
-#### `FindHandler` — *esqueleto creado*
-**Entradas:** `ActionExec`, `HandlerTag` (= `ExecutorReference`) → **Salidas:** `Handler` (Object), `Found?`.
-`HandlerTag` vacío → `Found? = false`. Arma candidatos en orden: `TargetContainer` → `SourceContainer` → componentes del actor dueño del Target (`GetOwnerActor` → `GetComponentsByInterface(BPI_ExecActionHandler)`) → componentes del Requester. Recorre con `ForEachLoopWithBreak`: `GetHandlerTag` (*Message*) `MatchesTag` exacto con `HandlerTag` → primero que coincide.
+#### `ResolveAction` — *implementada (salvo MultiUse por contexto)*
+**Entrada:** `ActionExec` → **Salidas:** `ActionRule` (STR_ActionDefinition), `Found?` (bool, **por defecto false** en los Return Node, para que ninguna rama devuelva `true` por accidente).
+- `ActionTag` válido (explícita: menú, PNJ) → `GetTagName` → `Map_Find` en `ActionRulesMap` → Return (`Found?` = resultado del `Map_Find`).
+- `ActionTag` vacío (hotbar, tecla rápida, doble clic) → `ItemManagerRef.GetItemInfo(ItemSlot.ItemID)` → `Set LocalItemFound` → si falla: `Found? = false` → si no: `ValidateActiveAction(ActionRulesList, LocalItemFound)` (la misma función del menú, así doble clic y menú coinciden) → con acción por defecto: Return (`ActionRule` = `ActiveAction`, `Found? = true`) → sin acción por defecto: `Found? = false` + *Comment* **PENDIENTE: MultiUse por contexto**.
+- No aplica el gate `AllowUse` sobre la acción por defecto: lo cubre `ValidateExec` (capacidades del contenedor contra la fila resuelta).
+
+#### `ValidateExec` — *implementada*
+**Entradas:** `ActionExec`, `ActionRule` → **Salidas:** `Valid?` (por defecto false), `FailTag`. **Local:** `CurrentSlot` (STR_Slot). Reglas genéricas, en orden:
+1. **A** `SourceContainer` (*Is Valid*) → no válido: Return `Valid? = true` sin tag (no hay contenedor que revisar).
+2. **B** `SourceSlotIndex >= 0` → False (la acción no sale de un slot) salta a D.
+3. **C** `GetSlotData(SourceSlotIndex)` → `CurrentSlot` → `ItemID` == **y** `InstanceID` == (*Equal Guid*) → si no: `Fail.StaleSlot` (**medida de seguridad**: el inventario refresca la UI en cada operación, pero el menú guarda una copia al abrirse y no escucha `OnInventoryUpdated`). Luego `Quantity >= 1` **y** `Quantity <= CurrentSlot.Quantity` → si no: `Fail.InvalidQuantity`. El tope de Split (`Quantity - 1`) **no** va aquí: es regla específica de Inventory.
+4. **D** `ValidateCapabalities(ActionExec, ActionRule)` → si no `CapabilityFound?`: `Fail.NotAllowed`.
+5. **E** `ValidateExcludedActions(ActionExec, ActionRule)` → si `FoundExcluded?`: `Fail.NotAllowed`.
+6. **F** *Comment*: "Faltan las capacidades del requester" (`RequiredRequesterCapability`, pendiente del componente de capacidades del actor).
+7. **G** Return `Valid? = true` sin tag.
+
+D, E, F y G están **duplicados** a propósito, una cadena para la ruta "sin slot" (B-False) y otra para "con slot" (C-True), por organización visual. Cualquier validación genérica nueva debe agregarse en **las dos** cadenas.
+
+#### `ValidateCapabalities` — *implementada*
+**Entradas:** `ActionExec`, `ActionRule` → **Salida:** `CapabilityFound?` (bool). **Locales:** `CapabilityOk?` (bool), `LocalCapabilities` (GameplayTagContainer).
+`RequiredTargetCapability.TagRequirement` vacío (`GetNumGameplayTagsInContainer == 0`) → `CapabilityOk? = true` (**requisito vacío = pasa**, explícito). Si no: `SourceContainer.Get Capabilities` → `LocalCapabilities` → *Switch on ENUM_ContextMatching* (`MatchMode`) → MatchAny: `HasAnyTags`, MatchAll: `HasAllTags` (`TagContainer` = `LocalCapabilities`, `Other` = requisito, exact = false) → `CapabilityOk?`. Las tres rutas convergen en el Return. Extraída como función por organización; candidata a reutilizarse en `ValidateBasicActions`/`ValidateMultiUseActions` cuando se alinee el menú con "requisito vacío = pasa" (hoy el menú todavía oculta, por ejemplo, Inspect).
+
+#### `ValidateExcludedActions` — *implementada*
+**Entradas:** `ActionExec`, `ActionDefinition` (por referencia, solo lectura) → **Salida:** `FoundExcluded?` (bool).
+`SourceContainer.GetExcludeActions` → `HasAnyTags(TagContainer = MakeGameplayTagContainerFromTag(ActionDefinition.ActionTag), Other = ExcludeActions, exact = false)`. La acción va en *Tag Container* para que Unreal incluya sus tags padre: excluir `Action.Container.Equip` también excluye `Action.Container.Equip.Wield`. Usa el `ActionTag` de la fila (el resuelto), no el del payload. Un solo nodo hace lo que `ValidateAcceptedActions` hace con un loop.
+
+#### `FindHandler` — *implementada*
+**Entradas:** `ActionExec`, `HandlerTag` (= `ExecutorReference`) → **Salidas:** `Handler` (Object), `Found?` (por defecto false). **Locales:** `Cadidates` (Array de Object; nombre con errata), `Requester`, `SourceContainer`, `TargetContainer`, `FinalHandler`, `Found`.
+- `HandlerTag` no válido → `Found? = false` (filas sin sistema, como "Multi uso" / "Random").
+- *Clear* `Cadidates` → *Sequence* que guarda `Requester`, `SourceContainer` y `TargetContainer` (como Object) → segunda *Sequence* que arma los candidatos con *Validated Get* y **AddUnique**, en orden: Target → Source → componentes del dueño del Target (`GetOwnerActor` → `GetComponentsByInterface(BPI_ExecActionHandler)` → *For Each* → AddUnique) → componentes del Requester (ídem).
+- **AddUnique** evita duplicados (el Target vuelve a aparecer entre los componentes de su dueño y el Source entre los del Requester) conservando la primera aparición, que es la que respeta el orden. *For Each + AddUnique* en vez de *Append* porque `GetComponentsByInterface` devuelve ActorComponent y `Cadidates` es Object.
+- Búsqueda: *For Each Loop with Break* → `Set FinalHandler` = elemento → `GetHandlerTag` (*Message*) → `MatchesTag` exacto con `HandlerTag` → coincide: `Found = true` → Break. *Completed* → Return (`Handler` = `FinalHandler`, `Found?` = `Found`).
+- Nota: `FinalHandler` se asigna antes de comparar, así que sin coincidencia `Handler` queda con el último candidato revisado (no vacío). No afecta: `RequestAction` solo usa `Found?`.
 
 #### `MakeFailResult` — *implementada* (Private, Pure)
 **Entrada:** `FailTag` → **Salida:** `ActionResult` (`Success? = false`, `ResultTag = FailTag`, `QuantityProcessed = 0`, `ReturnedItems` vacío). El manager solo arma resultados de fallo (los de éxito los arma el sistema dueño); con esta función cada rama de fallo es un solo nodo y todos los fallos se arman igual.
@@ -385,6 +417,21 @@ Flujo previsto: `ResolveAction` → (falla: `FinishAction(MakeFailResult(Fail.No
 
 #### Funciones migradas desde `BPFL_ContextActions`
 `ValidateActionMenu`, `ValidateBasicActions`, `ValidateActiveAction`, `GetMultiUseActions`, `ValidateMultiUseActions`, `GetMultiUseGroups`, `ValidateAcceptedActions`. Lógica idéntica a la original (se migró sin corregir nada, para que la prueba de regresión en PIE dé exactamente los mismos botones). Diferencias: reglas desde variables del manager, `OnDataWarning` en vez de `PrintString`, y `ValidateActionMenu` devuelve además `MultiUseActions` sin agrupar. Detalle de cada una en la sección *Funciones*.
+
+### `InventoryComponent` — ejecutor de acciones de contenedor
+> `InventoryComponent` es **el** sistema de administración de ítems. Los demás sistemas (Crafting, Equipment…) usan inventarios a través de `BPI_SlotHandler` (`RemoveAnItem`, `PickupInActions`), no tienen su propio Split/Transfer/Drop. Por eso esas acciones tienen `ExecutorReference = System.Handler.Inventory`.
+
+Implementa `BPI_ExecActionHandler`. Variable `SystemHandler = System.Handler.Inventory`. Las funciones `ExecX` son propias del componente, **no** van en la interfaz.
+
+| Función | Lógica |
+|---|---|
+| `GetHandlerTag` | Devuelve `SystemHandler`. |
+| `ExecuteAction` | *Switch on Gameplay Tag* sobre `ActionExec.ActionTag`: Split / Transfer / Drop → `ExecX` → *Set* `Action_Result` (local). **Default** → *Make STR_ActionResult* con `Fail.NotImplemented`. Un solo Return. |
+| `ExecSplit` | `GetSlotData(self, SourceSlotIndex)` → si `Quantity < slot.Quantity` → `ActionSplitItem` → `Success` / `Fail.Inventory.NoSpace` (con `Success? = false`). Si no → `Fail.Inventory.InvalidSplit`. |
+| `ExecDrop` | `RemoveItem(self, SourceSlotIndex, Quantity, ShouldSpawn = true)` → `Success` / `Fail.InvalidItem`. |
+| `ExecTransfer` | Lo ejecuta el inventario **de destino**. `TargetContainer` válido y `== Self`, si no `Fail.Inventory.NoTarget` → `CanAcceptItem(ItemID, IgnoreSpaceCheck = true)`, si no `Fail.Inventory.TargetRejected` → `PickUpItem(Make STR_Slot(ItemID, InstanceID, ActionExec.Quantity), NeedStack = true)` → `Processed = Quantity − QuantityRemaining` → `Processed > 0`, si no `Fail.Inventory.NoSpace` → `SourceContainer.RemoveAnItem(SourceSlotIndex, Processed, false)` → `Success` con `QuantityProcessed = Processed`. |
+
+**Reglas de Transfer:** se agrega primero en el destino y se descuenta del origen solo lo procesado; el excedente nunca sale del origen. El `STR_Slot` que se entrega se arma con `ActionExec.Quantity` (pasar `ItemSlot` directo duplicaba ítems). `IsStackable?` se comprueba en `FindStack`; `MaxStack = 1` para los no apilables. El `InstanceID` se ignora por ahora al apilar (futuro: pociones crafteadas con el mismo `ItemID`).
 
 ### `GI_Sunyi` — construcción del manager
 En `ReceiveInit`: `CachedActionRules` → **Construct Object from Class** (`Class = ExecActionClass`, `Outer = Self`, `ItemManagerRef`, `ActionRulesList`, `ActionRulesMap = ActionRulesListMap`) → **Set `ExecActionRef`** → **Bind Event to `OnDataWarning`** → `HandleDataWarning` (Custom Event: *Format Text* "Item: {Item} / Mensaje: {msj}" con `ItemID` y `GetTagName(Alert)` → *Print*, Development Only). El *Construct* va **después** de `CachedActionRules` para que las reglas no lleguen vacías. `ReceiveInit` del GameInstance corre antes que cualquier nivel o widget, así que el manager ya existe cuando alguien lo pide.
@@ -418,8 +465,10 @@ No la hace el GI. Se suscribe cada sistema que necesita reaccionar a acciones de
 - **`CompareExternal?` separa las acciones cuyo label depende del destino externo.** Una fila con este flag usa `ExternalTarget.GetContainerType()` para resolver su label; las demás usan `ClickedHandler.GetContainerType()`. Transferir lo activa porque el nombre útil de la acción depende de hacia dónde va el ítem (por ejemplo, Mover, Guardar o Entregar), no de su contenedor de origen.
 - **La validación de `ExternalTarget` no vive en `ValidateActionMenu`/`ValidateBasicActions`.** Esas funciones no conocen el destino emparejado; `ExternalTarget` existe en el scope de `BuildActionsMenu`. Por eso el loop de construcción omite cualquier fila con `CompareExternal? = true` cuando el externo no es válido y usa el mismo flag para escoger el contexto del label.
 - **`TargetAction` nombra la identidad de la acción dentro de `Build Action Btn`.** Los widgets siguen exponiendo internamente `ActionTag`, pero el parámetro de la función se llama `TargetAction` para distinguirlo de los múltiples valores `ActionTag` usados en otros puntos del sistema. El tag se conserva en el botón porque un label contextual no es una identidad estable.
-- **Un solo punto de salida para los clics (`SelectClickedAction`).** Los dos tipos de botón llegan a la misma función: el estándar con `Quantity = 1` fijo y el numérico con la cantidad elegida. Así, cuando `RequestAction` esté lista, solo hay que reemplazar el cuerpo de `SelectClickedAction`, sin tocar los botones ni `Build Action Btn`.
-- **Puente temporal al pipeline viejo.** Mientras no exista el payload/ejecución nuevos, `SelectClickedAction` arma un `STR_UseItemPayload` y dispara `GI_Sunyi.OnUseRequested`, para poder probar el menú de punta a punta. Es deuda consciente: no forma parte del diseño final y se reemplaza por `RequestAction` cuando esté terminada.
+- **Un solo punto de salida para los clics (`SelectClickedAction`).** Los dos tipos de botón llegan a la misma función: el estándar con `Quantity = 1` fijo y el numérico con la cantidad elegida. Gracias a eso, el cambio a `RequestAction` solo tocó el cuerpo de `SelectClickedAction`, sin tocar los botones ni `Build Action Btn`.
+- **Sin respaldo al sistema viejo (07/11/2026).** El puente temporal (`STR_UseItemPayload` + `OnUseRequested`) se quitó y no se agregó un respaldo para `NoHandler`/`NotImplemented`: el sistema viejo se elimina completo. Use, Inspect y Equip quedan sin funcionar hasta implementarlas en el sistema nuevo.
+- **El menú guarda `ActionSource` completo (`CurrentRequest`)** en vez de copiar sus campos a variables sueltas: un solo *Set*, y los tres datos (Requester, contenedor clicado, slot) viajan juntos. Corrigió también el bug de `SlotData` vacía del puente viejo.
+- **El filtro de `TargetContainer` según `CompareExternal?` vive en `RequestAction`, no en el menú.** El menú siempre envía `ExternalTarget`; el manager lo limpia cuando la acción resuelta no lo necesita (ver `RequestAction`, paso 2).
 
 ### Decisiones del rediseño de la ejecución (05/11/2026)
 - **Manager nuevo, no renombrado.** Se creó `BP_ExecActionManager` desde cero en vez de renombrar `BP_UseItemManager`: el grafo viejo estaba construido sobre lo descartado (`STR_UseItemPayload`, `DT_ActionPropertyRule`, `SourceHandler.UseItem`), y el puente temporal sigue dependiendo del viejo hasta que el nuevo esté probado.
@@ -442,11 +491,17 @@ No la hace el GI. Se suscribe cada sistema que necesita reaccionar a acciones de
 ### Implementado
 - `CachedActionRules` + `ExposeActionRules` en `GI_Sunyi`, llamada desde `ReceiveInit`. Funciones viejas (`BuildActionRulesCache`, `GetActionRules`) marcadas `Deprecated`, desconectadas pero no borradas.
 - Migración de namespace: `ValidateActionMenu`, `ValidateBasicActions`, `ValidateActiveAction`, `GetMultiUseActions`, `ValidateMultiUseActions`, `GetMultiUseGroups` y `ValidateAcceptedActions` viven ahora en `BP_ExecActionManager` (antes en `BPFL_ContextActions`; ver `Principios de diseño`).
-- Ejecución (05/11/2026): `STR_ActionExec`, `STR_ActionResult`, `BPI_ExecActionHandler`, `BP_ExecActionManager` (variables, dispatchers `OnActionExecuted`/`OnDataWarning`, `MakeFailResult`, `FinishAction`, rama explícita de `ResolveAction`, esqueletos de `RequestAction`/`ValidateExec`/`FindHandler`), construcción en `GI_Sunyi` con suscripción a `OnDataWarning`, y `GetExecActionManager` en `BPI_GIAccess`.
+- Ejecución (05/11/2026): `STR_ActionExec`, `STR_ActionResult`, `BPI_ExecActionHandler`, `BP_ExecActionManager` (variables, dispatchers `OnActionExecuted`/`OnDataWarning`, `MakeFailResult`, `FinishAction`, `ResolveAction` salvo MultiUse por contexto, `ValidateExec` con `ValidateCapabalities` y `ValidateExcludedActions`, `FindHandler` y `RequestAction`), construcción en `GI_Sunyi` con suscripción a `OnDataWarning`, y `GetExecActionManager` en `BPI_GIAccess`.
+- Menú migrado al manager y `BPFL_ContextActions` borrada (probado en PIE).
+- `BPI_SlotHandler`: `GetCapabalities` renombrada a `Get Capabilities` (el pin de salida conserva el nombre `Capabalities`).
+- Tags `System.Action.Result.Fail.*` creados (ver `4-1`).
+- `BP_Chest`: capacidades corregidas a `Container.Capability.*`.
 - `BuildActionsMenu` en `WBP_ContextMenu`, conectada desde `WBP_Slot.OnPreviewMouseButtonDown` (click derecho) vía `GetOwnerActor`. Confirmada la fase de datos completa: `ValidateActionMenu` → `ValidateAcceptedActions` → `FinalActionList`.
 - Resolución de labels implementada en `BuildActionsMenu`: fallback a `DefaultLabel`, selección de `ClickedHandler`/`ExternalTarget` mediante `CompareExternal?`, comparación exacta contra `ContextualLabels` y omisión de filas que requieren un externo inexistente.
 - `Build Action Btn` implementada y **conectada** al `Completed` del loop de `ContextualLabels` en `BuildActionsMenu` (`Test_Print_Actions` retirado): omite Split con `Quantity <= 1`, crea `WBP_ActionButton` o `WBP_NumericButton` según `AcceptNumValues AND Quantity > 1`, aplica `Quantity - 1` únicamente a Split, agrega el widget a `Container` y enlaza su delegate de clic.
-- Clics enlazados: `OnActionButtonClicked` → `HandleOptionClicked`, `OnActionNumericButtonClicked` → `HandleOptionNumeric`, ambos → `SelectClickedAction` (puente temporal al pipeline viejo vía `STR_UseItemPayload` + `GI_Sunyi.OnUseRequested`; cierra el menú y devuelve el foco al juego).
+- Clics enlazados: `OnActionButtonClicked` → `HandleOptionClicked`, `OnActionNumericButtonClicked` → `HandleOptionNumeric`, ambos → `SelectClickedAction` → `RequestAction` (07/11/2026; sin respaldo al sistema viejo).
+- `InventoryComponent` implementa `BPI_ExecActionHandler` (`ExecSplit`, `ExecDrop`, `ExecTransfer`; el resto → `Fail.NotImplemented`). `ExecutorReference` llenado en `DT_ActionDefinition`. Tags `System.Handler.*`, `Fail.Inventory.*`, `Fail.Equipment.*`, `Fail.NotImplemented` y `System.Warning.Data.MultiUse.*` creados.
+- `RequestAction` limpia `TargetContainer` cuando la acción no tiene `CompareExternal?`. Split, Drop y Transfer probados en PIE de punta a punta.
 - `ValidateActionMenu` (orquestador) **completa**, incluyendo el colapso de MultiUse: `ValidateBasicActions`, `ValidateActiveAction`, `ValidateMultiUseActions` y `GetMultiUseGroups` conectados en el flujo, gate `AllowUse` aplicado sobre la implícita, ensamblaje en `ActionListRaw` (orden implícita → multiuso agrupado/crudo → básicas) y `Return Node` devolviendo el resultado. Probada y confirmada en PIE con manzana (básica/implícita) y con yelmo/rama (multiuso).
 - `GetMultiUseActions` (resuelve `STR_MultiUse.ContextRelation` → `STR_Context_Action` vía `ActionRules`) y `ValidateMultiUseActions` (filtra por `ContextTag` + `Capabilities`, con guardas de consistencia de datos y `Success` cableado a un `Found` explícito). Bugs de `HasRelations` y de ambigüedad de `Success` encontrados y corregidos (ver `Decisiones de diseño`).
 - `GetMultiUseGroups` **completa**: colapsa el bucket de MultiUse en "Abrir menú" / "Acción aleatoria" cuando corresponde, recibiendo `ActionRules` como parámetro y resolviendo `Action.MultiUse.OpenMenu`/`Action.MultiUse.ExecuteRandom` con `Map_Find` sobre tags hardcodeados. Dos filas de sistema (`ActionMultiUseOpenMenu`, `ActionMultiUseExecuteRandom`) agregadas a `DT_ActionDefinition.json` para soportarla.
@@ -455,24 +510,27 @@ No la hace el GI. Se suscribe cada sistema que necesita reaccionar a acciones de
 - Bug de datos: `ActionEquip.RequiredItemProperty` corregido en `DT_ActionDefinition.json` (quitado `Item.Property.HasMultiUse`, dejando solo `Item.Property.Use.Equippable`). Confirmado con prueba de regresión en PIE (manzana / rama / casco).
 
 ### Pendiente
-- ~~Auditar el resto de contenedores por tags de capacidad desactualizados~~ → auditoría hecha (04/11/2026): el único contenedor afectado es `BP_Chest`. Pendiente: corregir sus `Capabilities` (ver `Decisiones de diseño`), opcionalmente agregar los Gameplay Tag Redirects, y probar en PIE con el cofre abierto (esperado: Soltar, Dividir, Usar y Transferir con label "Guardar" cuando el destino es el cofre). Repetir la búsqueda de `Container.Capabality` si se crean contenedores nuevos (bolsas de drop, stands) duplicando assets viejos.
+- ~~Auditar el resto de contenedores por tags de capacidad desactualizados~~ → hecho: el único afectado era `BP_Chest`, ya corregido. Repetir la búsqueda de `Container.Capabality` si se crean contenedores nuevos duplicando assets viejos.
+- Probar las rutas de fallo de `RequestAction` (`NoRule`, `InvalidItem`, `NotAllowed`, `InvalidQuantity`, `StaleSlot`, `NoHandler`, `NotImplemented`) con una suscripción temporal a `OnActionExecuted` que imprima `ActionTag` y `ResultTag`.
+- Resolver la fila `ActionUnequip` de `DT_ActionDefinition` (`ActionTag` duplicado con `Action.Container.Equip`): quitarla o darle un tag propio con `RequiredItemProperty` vacío y una capacidad `AllowUnequip`.
 - Crear el tag `Container.Capability.AllowMultiUse` en `Config/Tags/Sunyi_ContainerTags.ini`. `ValidateMultiUseActions` no tiene un gate propio para él: depende de que las filas MultiUse de `DT_ActionDefinition` lo incluyan en su `RequiredTargetCapability` para que el filtro de capacidades ya existente lo aplique.
 - Filtro de listas blanca/negra de *ítem* (`AllowedItemTags`/`ExcludedItemTags`), pendiente de conectar en el pre-filtro de `Transfer` contra `ExternalTarget` (distinto del filtro de acciones, ya resuelto por `ValidateAcceptedActions`).
 - Bucket de acciones de Requester (capacidades del actor, ej. Inspeccionar), función independiente aún no construida; requiere el componente de capacidades del actor, que tampoco existe todavía. Cuando exista, `BuildActionsMenu` deberá combinarlo con el resultado de `ValidateActionMenu` antes (o junto a) `ValidateAcceptedActions`.
 - Probar en PIE la construcción visual con stacks de cantidad 1 y mayores, y el clic de cada tipo de botón.
-- **Bug del puente temporal: `SlotData` llega vacía al payload.** `WBP_ContextMenu.SlotData` no es Expose on Spawn y ningún grafo la asigna. Si el pipeline viejo usa `Payload.SlotData`, las acciones fallarán o actuarán sobre un slot vacío. Opciones: guardar `ActionSource` (o su `ItemSlotData`) en una variable de miembro dentro de `BuildActionsMenu` y leerla en `SelectClickedAction`, o pasarla por Expose on Spawn desde `WBP_Slot`. Lo primero es más coherente con el sistema nuevo.
-- Limpiar el uso de variables DEPRECATED (`SlotTags`, `GI Sunyi Ref`) en `SelectClickedAction` cuando se reemplace por `RequestAction`.
-- Decidir quién es el `Requester` real: hoy `WBP_Slot` pasa el dueño del contenedor clicado, mientras que el payload usa el pawn del jugador como `ActionInitiator`. Afecta al bucket de Requester.
+- ~~Bug del puente temporal: `SlotData` vacía~~ → resuelto con `CurrentRequest`.
+- Borrar del menú las variables que ya no se usan (`SlotTags`, `GI Sunyi Ref`, `SlotData`) y dejar de pasarlas desde `WBP_Slot` (paso de limpieza).
+- Decidir quién es el `Requester` real: hoy `WBP_Slot` pasa el dueño del contenedor clicado (al clicar un slot del cofre, el Requester es el cofre). Afecta al bucket de Requester y a las capacidades del Requester.
 - Observaciones de datos en `DT_ActionDefinition` (`ExecMode` de Equip, `RequiredItemProperty` de `ActionEquipWield`, requisitos vacíos que nunca pasan `HasAnyTags`, ej. `Inspect`): ver `4-1`, "Observaciones de revisión".
 
 **Orden de trabajo vigente (reemplaza al anterior "menú principal → submenú MultiUse → Requester → payload"):**
-1. **Payload y manager** (en curso):
-   - Conectar `BuildActionsMenu` a `ValidateActionMenu` / `ValidateAcceptedActions` del manager (en curso) y probar en PIE (manzana / rama / casco / cofre: mismos botones que antes). Si pasa, borrar `BPFL_ContextActions`.
-   - Terminar `ResolveAction` (rama de acción por defecto; MultiUse por contexto queda pendiente), `ValidateExec`, `FindHandler` y `RequestAction`.
-   - Respaldo de `ReturnedItems` en `RequestAction` (devolver al origen o soltar en el mundo).
-   - Llenar `ExecutorReference` en `DT_ActionDefinition` y crear los tags `System.Handler.*`, `System.Action.Result.*` y `System.Warning.Data.*` (asignar `Alert` en `ValidateMultiUseActions`).
-   - Reemplazar el cuerpo de `SelectClickedAction` (puente temporal) por `RequestAction`, armando `STR_ActionExec` desde el menú (`Requester`, `ItemSlot` guardados en `BuildActionsMenu`; `SlotIndex`; `ClickedHandler`; `ExternalTarget` solo si `CompareExternal?`).
-2. **Acciones de contenedor**: `InventoryComponent` (y luego `EquipmentComponent`) implementan `BPI_ExecActionHandler` con variable `SystemHandler`; Split/Transfer/Drop/Use/Swap pasan a `ExecuteAction` (agregar primero en destino, descontar después).
+1. **Payload y manager** (terminado):
+   - ~~Conectar `BuildActionsMenu` al manager y borrar `BPFL_ContextActions`~~ → hecho.
+   - ~~Terminar `ResolveAction`, `ValidateExec`, `FindHandler` y `RequestAction`~~ → hecho (MultiUse por contexto queda pendiente).
+   - ~~Verificar que los fallos de `ValidateExec` y `NoHandler` avisen con `LocalExec`~~ → verificado.
+   - ~~Llenar `ExecutorReference` y crear `System.Handler.*` / `System.Warning.Data.*`~~ → hecho (falta asignar `Alert` en `ValidateMultiUseActions`).
+   - ~~Reemplazar `SelectClickedAction` por `RequestAction`~~ → hecho, con el filtro de `CompareExternal?` en el manager.
+   - Destino de `ReturnedItems` (almacenamiento oculto anclado al `InstanceID`): por diseñar.
+2. **Acciones de contenedor** (en curso): ~~`InventoryComponent` con Split/Drop/Transfer~~ → hecho y probado. Siguen, en orden: **Inspect** (no modifica el inventario), **Use** (definir antes dónde vive cada efecto), **Equip/Unequip** en `EquipmentComponent` (resolver antes la fila `ActionUnequip`).
 3. **Limpieza de todo lo DEPRECATED** (lista completa en `4-0`), incluido quitar las funciones `ActionX` de `BPI_SlotHandler`.
 - Submenú real de "Multi uso", ejecución de "Acción aleatoria", bucket de Requester y reglas de contexto de MultiUse: después de los tres pasos anteriores.
 - Unificación futura (opcional): si otra UI necesita otro orden de presentación, separar el ensamblado de `ValidateActionMenu`.

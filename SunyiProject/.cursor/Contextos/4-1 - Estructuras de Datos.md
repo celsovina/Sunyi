@@ -98,7 +98,7 @@ El propio ítem, en `STR_ItemInfo.StatData`, declara qué efecto concreto le cor
 **Notas de uso:**
 - `Requester`: quien pide la acción (jugador o PNJ). Pendiente decidir si el menú debe pasar el pawn del jugador en lugar del dueño del contenedor clicado (hoy `WBP_Slot` pasa `GetOwnerActor`).
 - `ActionTag` vacío = el manager resuelve la acción (por defecto → MultiUse por contexto). El manager escribe la acción resuelta en el payload antes de entregarlo al sistema dueño y antes de avisar por `OnActionExecuted`.
-- `ItemSlot`: identidad del ítem (`ItemID`, `InstanceID`) y copia del slot al momento de pedir. El manager la compara con el slot real (`SourceContainer.GetSlotData(SourceSlotIndex)`) como medida de seguridad (`Fail.StaleSlot`).
+- `ItemSlot`: identidad del ítem (`ItemID`, `InstanceID`) y copia del slot al momento de pedir. Toda petición trae un ítem: `RequestAction` rechaza `ItemID = None` (`Fail.InvalidItem`). No se valida `Quantity > 0` porque el inventario ya limpia siempre cualquier slot con cantidad ≤ 0. El manager la compara con el slot real (`SourceContainer.GetSlotData(SourceSlotIndex)`) como medida de seguridad (`Fail.StaleSlot`).
 - `Quantity`: cuánto operar (valor del botón numérico o 1). Independiente de `ItemSlot.Quantity`, que es lo que había en el slot.
 - `SourceSlotIndex = -1`: la acción no sale de un slot (ej. Craft de una receta); el manager omite las validaciones de slot y cantidad.
 - `SourceContainer`: de dónde sale el ítem; también es el contenedor contra el que se validan capacidades y `ExcludeActions`.
@@ -119,7 +119,8 @@ El propio ítem, en `STR_ItemInfo.StatData`, declara qué efecto concreto le cor
 - `Success? = false` por defecto a propósito: si un ejecutor olvida llenar el resultado, o el objeto no implementa la interfaz (Unreal devuelve la struct por defecto), la acción cuenta como fallida, no como exitosa.
 - `ResultTag`: código del resultado, bajo `System.Action.Result.*` (análogo a códigos HTTP). Ver *Tags del sistema*.
 - `QuantityProcessed`: lo realmente operado. En Transfer, el remanente se queda en el origen (solo se descuenta lo procesado), así que no se "devuelve".
-- `ReturnedItems` es **Array** a propósito (se evaluó dejarlo como valor único y se descartó): casos con varios ítems sin lugar — desequipar una mochila que concede slots (`GrantedInventorySlots`), arma a dos manos que libera ambas manos, Craft con subproductos (`STR_Recipes.OutputResult` es Array), desarmar un objeto. Es el respaldo de "nada se pierde": el manager los devuelve al origen o los suelta en el mundo.
+- `ReturnedItems` es **Array** a propósito (se evaluó dejarlo como valor único y se descartó): casos con varios ítems sin lugar — desequipar una mochila que concede slots (`GrantedInventorySlots`), arma a dos manos que libera ambas manos, Craft con subproductos (`STR_Recipes.OutputResult` es Array), desarmar un objeto. Es el respaldo de "nada se pierde".
+  - **Pendiente de diseño (05/11/2026):** el destino de los `ReturnedItems` no es solo "devolver al origen o soltar en el mundo". Ejemplo: el contenido de una mochila que se desequipa debe quedar en un **almacenamiento oculto anclado al `InstanceID`** del ítem contenedor, para volver a enlazarlo fácilmente cuando se equipe de nuevo, sin spawnearlo en el mundo ni pasarlo al inventario principal. Se diseña más adelante.
 
 ### STR_Context_Action
 > Estructura puente, propia del pipeline de resolución de MultiUse. Empaqueta "una acción concreta + en qué contextos es válida" (una acción, múltiples contextos posibles), para que la función de resolución (`GetMultiUseActions`) no tenga que devolver dos arrays paralelos, y la función de filtro (`ValidateMultiUseActions`, en construcción) no tenga que volver a consultar `ItemInfo.MultiUseBehavior.ContextRelation` para saber en qué contexto es válida cada acción ya resuelta.
@@ -172,7 +173,7 @@ El propio ítem, en `STR_ItemInfo.StatData`, declara qué efecto concreto le cor
 | Familia | Uso | Tags |
 |---|---|---|
 | `System.Handler.*` | Sistema dueño de una acción. Va en `ExecutorReference` de la fila y en la variable `SystemHandler` de cada componente ejecutor. | `System.Handler.Inventory`, `System.Handler.Equipment` (futuros: `Craft`, `Build`…) |
-| `System.Action.Result.*` | `STR_ActionResult.ResultTag`. Fallos del manager bajo `Fail`; los propios de cada sistema bajo `Fail.<Sistema>.*` (ej. `Fail.Craft.MissingMaterials`, `Fail.Inventory.NoSpace`). | `Fail.NoRule`, `Fail.NoHandler`, `Fail.StaleSlot`, `Fail.InvalidQuantity`, `Fail.NotAllowed`; sugerido: `System.Action.Result.Success` para que `ResultTag` nunca quede vacío |
+| `System.Action.Result.*` | `STR_ActionResult.ResultTag`. Fallos del manager bajo `Fail`; los propios de cada sistema bajo `Fail.<Sistema>.*` (ej. `Fail.Craft.MissingMaterials`, `Fail.Inventory.NoSpace`). | **Creados:** `Fail.InvalidItem`, `Fail.NoRule`, `Fail.NoHandler`, `Fail.StaleSlot`, `Fail.InvalidQuantity`, `Fail.NotAllowed`. Sugerido: `System.Action.Result.Success` para que `ResultTag` nunca quede vacío |
 | `System.Warning.Data.*` | Avisos de datos mal configurados, emitidos por `OnDataWarning` (pendiente de crear y asignar). | `System.Warning.Data.MultiUse.TagWithoutRelations`, `System.Warning.Data.MultiUse.RelationsWithoutTag` |
 
 ---
