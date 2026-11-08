@@ -154,7 +154,11 @@ Guarda `ActionSource` completo en la variable de miembro `CurrentRequest` (para 
 
 **Validación de entrada:** un `Branch` sobre `ItemID != None OR Quantity != 0` deja pasar el flujo; si el slot está vacío la función termina sin construir nada. Recién tras esa validación hace `ClearChildren` sobre `Container`.
 
-**Resolución de labels y destino externo:** guarda el resultado de `ValidateAcceptedActions` en `FinalActionList` y la recorre (`ForEachLoop`). Por cada fila guarda `ActionTag`, inicializa `ContextLabel` con `DefaultLabel` y guarda `AcceptNumValues`. Un `Branch` sobre `CompareExternal? AND NOT IsValid(ExternalTarget)` omite la fila (rama `true` sin conectar, el loop sigue). Si continúa, `CompareExternal?` selecciona el origen de `ContextTag`: `ExternalTarget.GetContainerType()` cuando es verdadero o `ClickedHandler.GetContainerType()` cuando es falso. Después recorre `ContextualLabels` con `ForEachLoopWithBreak`; una igualdad exacta `SourceContext == ContextTag` reemplaza `ContextLabel` y corta el loop. Si no hay coincidencia permanece `DefaultLabel`.
+**Resolución de labels y destino externo:** guarda el resultado de `ValidateAcceptedActions` en `FinalActionList` y la recorre (`ForEachLoop`). Por cada fila la guarda en la local **`RawAction`** (de ahí salen el Break de la fila y la regla para validar), guarda `ActionTag`, inicializa `ContextLabel` con `DefaultLabel` y guarda `AcceptNumValues`. Un `Branch` sobre `CompareExternal? AND NOT IsValid(ExternalTarget)` omite la fila (rama `true` sin conectar, el loop sigue). Si continúa, un `Branch` sobre `CompareExternal?`:
+- **false** → `ClickedHandler.GetContainerType()` → `ContextTag`.
+- **true** → **validación de capacidades del destino** (07/11/2026): `ExecActionManager.ValidateCapabalities(Make STR_ActionExec {solo TargetContainer = ExternalTarget}, RawAction)` → `Branch` sobre `CapabilityFound?`: false omite la fila; true → `ExternalTarget.GetContainerType()` → `ContextTag`. Así el menú usa la misma función que el manager (incluido "requisito vacío = pasa").
+
+El manager se obtiene una sola vez al inicio (`GetGameInstance` → `GetExecActionManager`) y se guarda en la local **`ExecActionManager`**, que reutilizan `ValidateActionMenu`, `ValidateAcceptedActions` y esta validación. Después recorre `ContextualLabels` con `ForEachLoopWithBreak`; una igualdad exacta `SourceContext == ContextTag` reemplaza `ContextLabel` y corta el loop. Si no hay coincidencia permanece `DefaultLabel`.
 
 **Construcción del botón:** en el `Completed` del loop de `ContextualLabels` (se dispara haya habido break o no) llama `Build Action Btn(OptionText = ContextLabel, ItemData = ActionSource.ItemSlotData, TargetAction = ActionTag, AcceptNumValues)`. `Test_Print_Actions` ya fue retirado.
 
@@ -236,7 +240,9 @@ Usa directamente las reglas del manager (`ActionRulesList` / `ActionRulesMap`); 
 |-----|---|
 | LocalValidActions | Array de STR_ActionDefinition |
 
-Recorre `ActionList`; descarta las filas donde `RequiredItemProperty.TagRequirement` **no** está vacío (esas son candidatas a implícita, no básicas). Para el resto, usa `SwitchEnum` sobre `RequiredTargetCapability.MatchMode` para despachar a `HasAnyTags`/`HasAllTags` contra `Capabilities`. Las filas que matchean se agregan al array de salida.
+Recorre `ActionList`; descarta las filas donde `RequiredItemProperty.TagRequirement` **no** está vacío (esas son candidatas a implícita, no básicas). Para el resto:
+- **`CompareExternal? = true`** (Transfer) → se agrega directo a la salida, **sin revisar capacidades** (07/11/2026). Esta función solo conoce el contenedor clicado, y la capacidad de Transfer se revisa en el destino; esa revisión la hace `BuildActionsMenu` contra `ExternalTarget`.
+- **`CompareExternal? = false`** → `SwitchEnum` sobre `RequiredTargetCapability.MatchMode` para despachar a `HasAnyTags`/`HasAllTags` contra `Capabilities`. Las filas que matchean se agregan al array de salida.
 
 **Probado y confirmado en PIE**: con el tag de capacidad corregido (ver `Decisiones de diseño`), `Use` queda correctamente excluida de este bucket (por tener `RequiredItemProperty` no vacío), y `Split`/`Transfer`/`Drop` aparecen correctamente cuando el contenedor tiene la capacidad correspondiente.
 
@@ -395,7 +401,7 @@ D, E, F y G están **duplicados** a propósito, una cadena para la ruta "sin slo
 
 #### `ValidateCapabalities` — *implementada*
 **Entradas:** `ActionExec`, `ActionRule` → **Salida:** `CapabilityFound?` (bool). **Locales:** `CapabilityOk?` (bool), `LocalCapabilities` (GameplayTagContainer).
-`RequiredTargetCapability.TagRequirement` vacío (`GetNumGameplayTagsInContainer == 0`) → `CapabilityOk? = true` (**requisito vacío = pasa**, explícito). Si no: `SourceContainer.Get Capabilities` → `LocalCapabilities` → *Switch on ENUM_ContextMatching* (`MatchMode`) → MatchAny: `HasAnyTags`, MatchAll: `HasAllTags` (`TagContainer` = `LocalCapabilities`, `Other` = requisito, exact = false) → `CapabilityOk?`. Las tres rutas convergen en el Return. Extraída como función por organización; candidata a reutilizarse en `ValidateBasicActions`/`ValidateMultiUseActions` cuando se alinee el menú con "requisito vacío = pasa" (hoy el menú todavía oculta, por ejemplo, Inspect).
+`RequiredTargetCapability.TagRequirement` vacío (`GetNumGameplayTagsInContainer == 0`) → `CapabilityOk? = true` (**requisito vacío = pasa**, explícito). Si no: **Select** (`Index` = `ActionRule.CompareExternal?`; false → `ActionExec.SourceContainer`, true → `ActionExec.TargetContainer`) → `Conv_InterfaceToObject` → `Get Capabilities` (07/11/2026: antes leía siempre `SourceContainer`; ahora Transfer revisa el destino, ver `4-1`). Si el contenedor elegido es None, `Get Capabilities` devuelve vacío y la validación falla (salvo requisito vacío) → `LocalCapabilities` → *Switch on ENUM_ContextMatching* (`MatchMode`) → MatchAny: `HasAnyTags`, MatchAll: `HasAllTags` (`TagContainer` = `LocalCapabilities`, `Other` = requisito, exact = false) → `CapabilityOk?`. Las tres rutas convergen en el Return. **Usada también fuera del manager**: `WBP_ContextMenu.BuildActionsMenu` la llama para validar Transfer contra `ExternalTarget`, y `WBP_Slot.ValidateDragTransfer` la usa indirectamente a través de `ValidateExec`. Candidata a reutilizarse en `ValidateBasicActions`/`ValidateMultiUseActions` cuando se alinee el resto del menú con "requisito vacío = pasa".
 
 #### `ValidateExcludedActions` — *implementada*
 **Entradas:** `ActionExec`, `ActionDefinition` (por referencia, solo lectura) → **Salida:** `FoundExcluded?` (bool).
@@ -433,6 +439,27 @@ Implementa `BPI_ExecActionHandler`. Variable `SystemHandler = System.Handler.Inv
 
 **Reglas de Transfer:** se agrega primero en el destino y se descuenta del origen solo lo procesado; el excedente nunca sale del origen. El `STR_Slot` que se entrega se arma con `ActionExec.Quantity` (pasar `ItemSlot` directo duplicaba ítems). `IsStackable?` se comprueba en `FindStack`; `MaxStack = 1` para los no apilables. El `InstanceID` se ignora por ahora al apilar (futuro: pociones crafteadas con el mismo `ItemID`).
 
+### `WBP_Slot` — Drag & Drop validado con las reglas de Transfer (07/11/2026)
+> El Swap no es una acción (no pasa por `RequestAction`), pero el arrastre **entre contenedores distintos** se valida con las mismas reglas que Transfer, reutilizando `ValidateExec` del manager. La ejecución sigue siendo la del Drag & Drop (`DropOnStack` / `SwapSlots`).
+
+#### `ValidateDragTransfer` (función nueva)
+**Salida:** `Candrop?` (bool). **Locales:** `ExecManager`, `LocalRule` (STR_ActionDefinition), `LocalExec` (STR_ActionExec), `LocalRequester` (Actor). Lee la variable `DDoperation` (la operación de arrastre), así que se llama después de que `OnDrop` la asigna.
+1. **Mismo contenedor** (`DDoperation.SlotHandler == SlotHandler`, comparados como Object) → `true`. El Swap dentro de un contenedor es libre.
+2. `GetGameInstance` → `GetExecActionManager` → `ExecManager` → `ActionRulesMap.Find(GetTagName(Make Literal Gameplay Tag Action.Container.Transfer))`. No encontrada → `false`. Encontrada → `LocalRule`.
+3. **Ida:** `LocalRequester` = `DDoperation.SlotHandler.GetOwnerActor`. `LocalExec` = { `Requester`, `ActionTag` de la regla, `ItemSlot` = `DDoperation.SlotData`, `Quantity` = su cantidad (el arrastre mueve el stack completo), `SourceSlotIndex` = `DDoperation.ContentIndex`, `SourceContainer` = `DDoperation.SlotHandler`, `TargetContainer` = `SlotHandler` de este slot }. `ValidateExec(LocalExec, LocalRule)` → false → `false`.
+4. **¿Habrá vuelta?** Si el `ItemID` del `SlotData` **de este slot** es None (slot vacío) o es igual al arrastrado (se apilan) → `true`.
+5. **Vuelta (Swap):** el ítem de este slot viajará al origen. Segundo `STR_ActionExec` invertido: { `ItemSlot`, `Quantity`, `SourceSlotIndex` (`ContentIndex`) y `SourceContainer` (`SlotHandler`) de **este** slot; `TargetContainer` = `DDoperation.SlotHandler` } → `ValidateExec` (segundo nodo) → `DDoperation.SlotHandler.CanAcceptItem(ItemID de este slot, IgnoreSpaceCheck = true)` → `Candrop? = Valid? AND CanAcceptItem`.
+
+**Por qué la vuelta:** en un Swap entre contenedores los ítems viajan en los dos sentidos. Sin el paso 5, arrastrar un ítem de un cofre sin `AllowMove` sobre un slot ocupado del inventario metía el ítem del inventario en el cofre (bug visto en PIE). `CanAcceptItem` cubre además los filtros de ítem (`AllowedItemTags`/`ExcludedItemTags`) del origen, que `OnDrop` solo revisaba en el destino.
+
+#### `OnDrop`
+`ReturnDD_Operation` → `Set DDoperation` → **`ValidateDragTransfer`** → `Candrop? = false` → Return `false`. Si es `true`, sigue igual que antes: `Get_UI_Handler` → Branch `OriginSlotTags` → `CanAcceptItem` (destino) → zona especial (`SpecialZoneReport` / `ClearCacheZone` / `SpecialZoneVisibility`) → `DropOnStack` → si falla, `SwapSlots`.
+
+#### Zona especial de soltar (DropZone)
+`WBP_Inventory` genera un actor `BP_UI_Host` (`InventoryType = Container.Type.DropZone`) con un `InventoryComponent` temporal (`TempInventory`), y al crearlo le asigna **solo** `Container.Capability.AllowMove` (`Set HandlerCapabilities`). Sin esa capacidad, arrastrar desde la zona hacia afuera fallaba con `NotAllowed`. La zona está exenta de las reglas de Drop a propósito (ver `4-0`); su botón suelta todo al mundo. Pendiente: revisar si `SpecialZoneReport` / `ClearCacheZone` / el botón de vaciar dependen de las transacciones viejas de `WBP_Inventory` (`PendingUse`, `Save Transaction`, `RestoreInventories`).
+
+**Probado en PIE (07-08/11/2026):** Swap en el mismo inventario; inventario ↔ cofre; cofre sin `AllowMove` (sacar a slot vacío sí, meter no, sacar sobre slot ocupado con otro ítem no); cofre con `AllowMove` en los dos sentidos; zona especial en los dos sentidos.
+
 ### `GI_Sunyi` — construcción del manager
 En `ReceiveInit`: `CachedActionRules` → **Construct Object from Class** (`Class = ExecActionClass`, `Outer = Self`, `ItemManagerRef`, `ActionRulesList`, `ActionRulesMap = ActionRulesListMap`) → **Set `ExecActionRef`** → **Bind Event to `OnDataWarning`** → `HandleDataWarning` (Custom Event: *Format Text* "Item: {Item} / Mensaje: {msj}" con `ItemID` y `GetTagName(Alert)` → *Print*, Development Only). El *Construct* va **después** de `CachedActionRules` para que las reglas no lleguen vacías. `ReceiveInit` del GameInstance corre antes que cualquier nivel o widget, así que el manager ya existe cuando alguien lo pide.
 
@@ -469,6 +496,9 @@ No la hace el GI. Se suscribe cada sistema que necesita reaccionar a acciones de
 - **Sin respaldo al sistema viejo (07/11/2026).** El puente temporal (`STR_UseItemPayload` + `OnUseRequested`) se quitó y no se agregó un respaldo para `NoHandler`/`NotImplemented`: el sistema viejo se elimina completo. Use, Inspect y Equip quedan sin funcionar hasta implementarlas en el sistema nuevo.
 - **El menú guarda `ActionSource` completo (`CurrentRequest`)** en vez de copiar sus campos a variables sueltas: un solo *Set*, y los tres datos (Requester, contenedor clicado, slot) viajan juntos. Corrigió también el bug de `SlotData` vacía del puente viejo.
 - **El filtro de `TargetContainer` según `CompareExternal?` vive en `RequestAction`, no en el menú.** El menú siempre envía `ExternalTarget`; el manager lo limpia cuando la acción resuelta no lo necesita (ver `RequestAction`, paso 2).
+- **Capacidades de Transfer en el destino (07/11/2026).** `CompareExternal?` decide dónde se revisa `RequiredTargetCapability`: origen (false) o destino (true). Se reutilizó ese campo en vez de agregar uno nuevo a `STR_ActionDefinition`, porque modificar structs base suele dañar el build y `CompareExternal?` ya significa "esta acción involucra al contenedor externo". Cambios: `ValidateCapabalities` (Select de contenedor), `ValidateBasicActions` (las filas `CompareExternal?` pasan sin revisar) y `BuildActionsMenu` (revisa el destino con `ValidateCapabalities`).
+- **El Drag & Drop reutiliza `ValidateExec` en vez de copiar reglas.** Así el menú y el arrastre no pueden divergir. No se usa `RequestAction` porque la ejecución es distinta: el arrastre intercambia o apila en un slot concreto, mientras que `ExecTransfer` busca hueco o stack.
+- **La regla de Drop no aplica a la zona especial**, por diseño (ver `4-0`).
 
 ### Decisiones del rediseño de la ejecución (05/11/2026)
 - **Manager nuevo, no renombrado.** Se creó `BP_ExecActionManager` desde cero en vez de renombrar `BP_UseItemManager`: el grafo viejo estaba construido sobre lo descartado (`STR_UseItemPayload`, `DT_ActionPropertyRule`, `SourceHandler.UseItem`), y el puente temporal sigue dependiendo del viejo hasta que el nuevo esté probado.
@@ -502,6 +532,8 @@ No la hace el GI. Se suscribe cada sistema que necesita reaccionar a acciones de
 - Clics enlazados: `OnActionButtonClicked` → `HandleOptionClicked`, `OnActionNumericButtonClicked` → `HandleOptionNumeric`, ambos → `SelectClickedAction` → `RequestAction` (07/11/2026; sin respaldo al sistema viejo).
 - `InventoryComponent` implementa `BPI_ExecActionHandler` (`ExecSplit`, `ExecDrop`, `ExecTransfer`; el resto → `Fail.NotImplemented`). `ExecutorReference` llenado en `DT_ActionDefinition`. Tags `System.Handler.*`, `Fail.Inventory.*`, `Fail.Equipment.*`, `Fail.NotImplemented` y `System.Warning.Data.MultiUse.*` creados.
 - `RequestAction` limpia `TargetContainer` cuando la acción no tiene `CompareExternal?`. Split, Drop y Transfer probados en PIE de punta a punta.
+- Capacidades de Transfer revisadas en el destino (`ValidateCapabalities`, `ValidateBasicActions`, `BuildActionsMenu`). Probado con un cofre sin `AllowMove`.
+- Drag & Drop validado con las reglas de Transfer en los dos sentidos (`WBP_Slot.ValidateDragTransfer`, conectada en `OnDrop`). Zona especial con `AllowMove`. Probado en PIE.
 - `ValidateActionMenu` (orquestador) **completa**, incluyendo el colapso de MultiUse: `ValidateBasicActions`, `ValidateActiveAction`, `ValidateMultiUseActions` y `GetMultiUseGroups` conectados en el flujo, gate `AllowUse` aplicado sobre la implícita, ensamblaje en `ActionListRaw` (orden implícita → multiuso agrupado/crudo → básicas) y `Return Node` devolviendo el resultado. Probada y confirmada en PIE con manzana (básica/implícita) y con yelmo/rama (multiuso).
 - `GetMultiUseActions` (resuelve `STR_MultiUse.ContextRelation` → `STR_Context_Action` vía `ActionRules`) y `ValidateMultiUseActions` (filtra por `ContextTag` + `Capabilities`, con guardas de consistencia de datos y `Success` cableado a un `Found` explícito). Bugs de `HasRelations` y de ambigüedad de `Success` encontrados y corregidos (ver `Decisiones de diseño`).
 - `GetMultiUseGroups` **completa**: colapsa el bucket de MultiUse en "Abrir menú" / "Acción aleatoria" cuando corresponde, recibiendo `ActionRules` como parámetro y resolviendo `Action.MultiUse.OpenMenu`/`Action.MultiUse.ExecuteRandom` con `Map_Find` sobre tags hardcodeados. Dos filas de sistema (`ActionMultiUseOpenMenu`, `ActionMultiUseExecuteRandom`) agregadas a `DT_ActionDefinition.json` para soportarla.
@@ -512,7 +544,8 @@ No la hace el GI. Se suscribe cada sistema que necesita reaccionar a acciones de
 ### Pendiente
 - ~~Auditar el resto de contenedores por tags de capacidad desactualizados~~ → hecho: el único afectado era `BP_Chest`, ya corregido. Repetir la búsqueda de `Container.Capabality` si se crean contenedores nuevos duplicando assets viejos.
 - Probar las rutas de fallo de `RequestAction` (`NoRule`, `InvalidItem`, `NotAllowed`, `InvalidQuantity`, `StaleSlot`, `NoHandler`, `NotImplemented`) con una suscripción temporal a `OnActionExecuted` que imprima `ActionTag` y `ResultTag`.
-- Resolver la fila `ActionUnequip` de `DT_ActionDefinition` (`ActionTag` duplicado con `Action.Container.Equip`): quitarla o darle un tag propio con `RequiredItemProperty` vacío y una capacidad `AllowUnequip`.
+- Resolver la fila `ActionUnequip` de `DT_ActionDefinition` (`ActionTag` duplicado con `Action.Container.Equip`) cuando se trabaje el EquipmentSystem: quitarla o darle un tag propio con `RequiredItemProperty` vacío y una capacidad `AllowUnequip`.
+- Avisos del arrastre: el Drag & Drop no dispara `OnActionExecuted`. Los sistemas que necesiten saber qué salió de un contenedor (ej. un cofre de misión) deben escuchar su `OnInventoryUpdated` (ver `4-0`).
 - Crear el tag `Container.Capability.AllowMultiUse` en `Config/Tags/Sunyi_ContainerTags.ini`. `ValidateMultiUseActions` no tiene un gate propio para él: depende de que las filas MultiUse de `DT_ActionDefinition` lo incluyan en su `RequiredTargetCapability` para que el filtro de capacidades ya existente lo aplique.
 - Filtro de listas blanca/negra de *ítem* (`AllowedItemTags`/`ExcludedItemTags`), pendiente de conectar en el pre-filtro de `Transfer` contra `ExternalTarget` (distinto del filtro de acciones, ya resuelto por `ValidateAcceptedActions`).
 - Bucket de acciones de Requester (capacidades del actor, ej. Inspeccionar), función independiente aún no construida; requiere el componente de capacidades del actor, que tampoco existe todavía. Cuando exista, `BuildActionsMenu` deberá combinarlo con el resultado de `ValidateActionMenu` antes (o junto a) `ValidateAcceptedActions`.
@@ -530,7 +563,10 @@ No la hace el GI. Se suscribe cada sistema que necesita reaccionar a acciones de
    - ~~Llenar `ExecutorReference` y crear `System.Handler.*` / `System.Warning.Data.*`~~ → hecho (falta asignar `Alert` en `ValidateMultiUseActions`).
    - ~~Reemplazar `SelectClickedAction` por `RequestAction`~~ → hecho, con el filtro de `CompareExternal?` en el manager.
    - Destino de `ReturnedItems` (almacenamiento oculto anclado al `InstanceID`): por diseñar.
-2. **Acciones de contenedor** (en curso): ~~`InventoryComponent` con Split/Drop/Transfer~~ → hecho y probado. Siguen, en orden: **Inspect** (no modifica el inventario), **Use** (definir antes dónde vive cada efecto), **Equip/Unequip** en `EquipmentComponent` (resolver antes la fila `ActionUnequip`).
-3. **Limpieza de todo lo DEPRECATED** (lista completa en `4-0`), incluido quitar las funciones `ActionX` de `BPI_SlotHandler`.
+2. **Acciones de contenedor** (terminado): ~~`InventoryComponent` con Split/Drop/Transfer~~ → hecho y probado. ~~Drag & Drop coherente con Transfer~~ → hecho y probado.
+   - **Inspect**: diferida hasta el InstanceSystem / LearnSystem (ver `4-0`).
+   - **Equip/Unequip**: fuera de esta fase (EquipmentSystem).
+3. **Limpieza del sistema viejo** (siguiente): lista y orden en `4-0`. Antes, revisar con el export completo si la zona especial depende de las transacciones de `WBP_Inventory`, y reconectar el doble clic de `WBP_Slot` a `RequestAction` con `ActionTag` vacío.
+4. **Use**: diseñarlo completo (todas sus opciones, no solo consumir 1 ítem), definiendo antes dónde vive cada efecto.
 - Submenú real de "Multi uso", ejecución de "Acción aleatoria", bucket de Requester y reglas de contexto de MultiUse: después de los tres pasos anteriores.
 - Unificación futura (opcional): si otra UI necesita otro orden de presentación, separar el ensamblado de `ValidateActionMenu`.
