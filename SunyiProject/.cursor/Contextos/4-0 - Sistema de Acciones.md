@@ -129,16 +129,45 @@ Ejemplos: Craft con forja abierta → `CraftComponent` de la forja; Craft sin fo
 
 Orden de trabajo acordado: **1. Payload y manager → 2. Acciones de contenedor (Split, Transfer, Drop) → 3. Limpieza de todo lo DEPRECATED → 4. Use.** Los pasos 1 y 2 están terminados. Hasta el paso 3 estos assets siguen existiendo:
 
+> Lista revisada contra el export completo del 08/11/2026.
+
 - `BP_UseItemManager` (reemplazado por `BP_ExecActionManager`).
-- `GI_Sunyi`: el dispatcher `OnUseRequested`, la construcción de `BP_UseItemManager`, `BuildActionRulesCache`, `GetActionRules`, `ActionRules`/`ActionRulesMap` viejos.
-- `InventoryComponent`: `ExecActions`, `GetExecutableAction`, `UseConsumable`, `ConsumeItem`, `ActionUseItem`. Lo único implementado de Use en el sistema viejo es consumir 1 ítem de un stack consumible; se rehace al diseñar Use completo.
+- `GI_Sunyi`: el dispatcher `OnUseRequested` y su bind en el EventGraph, la construcción de `BP_UseItemManager`, `BuildActionRulesCache` (todavía aparece en el EventGraph), `GetActionRules`, `GetUseItem`, `ActionRules`/`ActionRulesMap` viejos.
+- `BPI_GIAccess`: `GetUseItem`.
+- `InventoryComponent`: los eventos `UseItem` (de `BPI_UseItemHandler`) y `ActionUseItem`, `ExecActions`, `GetExecutableAction`, `UseConsumable`, `ConsumeItem`, `ActionDisassemble`. Lo único implementado de Use en el sistema viejo es consumir 1 ítem de un stack consumible; se rehace al diseñar Use completo.
 - `BPI_SlotHandler`: las funciones de acción concretas salen de la interfaz.
-  - **Al quitar una función de una interfaz, Unreal no borra su grafo**: si solo tiene entradas, se vuelve un evento; si tiene salidas, se vuelve una función propia del Blueprint. Por eso `ActionSplitItem` (usada por `ExecSplit`) sobrevive como función interna de `InventoryComponent`.
+  - **Al quitar una función de una interfaz, Unreal no borra su grafo**: si solo tiene entradas, se vuelve un evento; si tiene salidas, se vuelve una función propia del Blueprint.
+  - `ActionSplitItem` **se queda** como función interna de `InventoryComponent` (la usa `ExecSplit`).
   - `ActionDisassemble` es lógica de crafting y **se borra** (no se va a usar).
-  - `ActionUseItem` y `ActionTransferItem`: revisar si algo las usa antes de borrarlas.
+  - `ActionUseItem`: se borra (solo la usa el sistema viejo).
+  - `ActionTransferItem`: hoy solo la usa `WBP_Inventory.RestoreInventories`. **Primero** se cambia esa llamada (ver *Zona especial* abajo) y después se borra.
 - `BPFL_Utilities`: `GetValidActions`, `ValidateTargetActions`.
 - `WBP_ContextMenu`: las variables sin uso `SlotTags`, `GI Sunyi Ref`, `SlotData` (y dejar de pasarlas desde `WBP_Slot`). `SelectClickedAction` ya usa `RequestAction`.
-- `WBP_Slot`: el nodo huérfano `GetValidActions` y el **doble clic**, que llama a `OnUseRequested`. Se reconecta a `RequestAction` con `ActionTag` vacío (acción por defecto del ítem). **El Drag & Drop no es deprecado**: usa `BPI_SlotHandler` (`CanAcceptItem`, `SwapSlots`, `DropOnStack`) y la nueva `ValidateDragTransfer`.
-- `WBP_Inventory`: el array `PendingUse` y la lógica de `Save Transaction` / `RestoreInventories`. **Revisar antes de borrar**: el flujo de la zona especial (`SpecialZoneReport`, `ClearCacheZone`, botón de vaciar la zona) podría depender de esa lógica.
-- `STR_UseItemPayload`, `BPI_UseItemHandler`, `STR_ActionRules`, `STR_ActionNames`, `STR_PendingToUse`, `DT_ActionList`, `DT_ActionNames`, `DT_ActionPropertyRule`.
-- Antes de borrar cada asset, confirmar con **Reference Viewer** que nadie más lo usa. Orden sugerido: primero quien llama, después lo llamado (`WBP_Slot` → `WBP_Inventory` → `GI_Sunyi` → `InventoryComponent` → `BP_UseItemManager`/`BPI_UseItemHandler` → structs y DataTables → `BPFL_Utilities` → variables de `WBP_ContextMenu`).
+- `WBP_Slot` (EventGraph): el clic del `ActionButton` que llama a `GetGI_Sunyi` → **`OnUseRequested`**, y el nodo huérfano `BPFL_Utilities.GetValidActions`. El clic se reconecta a `RequestAction` con `ActionTag` vacío (acción por defecto del ítem). **El Drag & Drop no es deprecado**: usa `BPI_SlotHandler` (`CanAcceptItem`, `SwapSlots`, `DropOnStack`) y `ValidateDragTransfer`.
+- `STR_UseItemPayload`, `BPI_UseItemHandler`, `STR_ActionRules`, `STR_ActionNames`, `DT_ActionList`, `DT_ActionNames`, `DT_ActionPropertyRule`.
+- Antes de borrar cada asset, confirmar con **Reference Viewer** que nadie más lo usa. Orden sugerido: primero quien llama, después lo llamado: cambio de `RestoreInventories` → `WBP_Slot` → `GI_Sunyi` / `BPI_GIAccess` → `InventoryComponent` → `BPI_SlotHandler` → `BP_UseItemManager` / `BPI_UseItemHandler` → structs y DataTables → `BPFL_Utilities` → variables de `WBP_ContextMenu`.
+
+### Lo que NO es del sistema viejo (no se borra)
+
+- **Zona especial de soltar (`WBP_Inventory`)**: `PendingUse`, `Save Transaction`, `RestoreInventories`, `ClearCacheZone`, `SpawnLoot`, `SpecialZoneReport`, `SpecialZoneVisibility`, `CreateHost` y la struct `STR_PendingToUse`. Tienen "Use" en el nombre por historia, pero son **el registro de transacciones de la zona**, no del sistema viejo de uso. Ver *Zona especial* abajo.
+- **Drag & Drop de `WBP_Slot`** (`OnDrop`, `ValidateDragTransfer`).
+- **`ActionSplitItem`** (pasa a función interna).
+
+### Zona especial: cómo funciona y cambio pendiente
+
+| Momento | Qué pasa |
+|---|---|
+| Abrir el inventario (`Construct`) | `CreateHost` crea `BP_UI_Host` (`Container.Type.DropZone`) con un inventario temporal y le asigna `AllowMove`. |
+| Meter un ítem en la zona | `WBP_Slot.OnDrop` → evento `SpecialZoneReport` → **`Save Transaction`** agrega un registro a **`PendingUse`** (`STR_PendingToUse`: `SourceHandle`, `SourceSlotIndex`, `ItemData`, `TargetSlotIndex`, `TargetHandler`). |
+| Sacar un ítem de la zona | `ClearCacheZone` borra ese registro. |
+| Botón de tirar | **`SpawnLoot`** suelta al mundo todo lo de la zona, la vacía y limpia `PendingUse`. |
+| Cerrar el inventario sin tirar (`Destruct`) | **`RestoreInventories`** devuelve cada ítem a su inventario de origen y destruye el host. |
+
+**Cambio pendiente en `RestoreInventories`** (primer paso de la limpieza). Hoy, por cada registro: zona → `RemoveAnItem` y después origen → `ActionTransferItem(ItemData)`. Dos problemas:
+1. `ActionTransferItem` sale de `BPI_SlotHandler` en la limpieza, así que esta llamada se rompería.
+2. `ActionTransferItem` solo llama a `PickUpItem` e **ignora lo que no cupo**. Como el ítem ya se quitó de la zona, si el origen no tiene espacio (ej. el jugador llenó el hueco con otro ítem antes de cerrar), ese ítem **se pierde**.
+
+Corrección propuesta:
+- Reemplazar `ActionTransferItem` por **`PickupInActions`(`ItemData`, `NeedStack? = true`)**, que ya está en `BPI_SlotHandler` y devuelve `QuantityRemaining`.
+- Invertir el orden: **primero devolver al origen, después quitar de la zona solo lo que entró** (cantidad − `QuantityRemaining`), igual que `ExecTransfer`.
+- Lo que no quepa en el origen se suelta al mundo, porque la zona se destruye al cerrar ("nada se pierde").
